@@ -1,1 +1,107 @@
 
+name: CI/CD
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: git_action_java
+
+jobs:
+  # ===============================================
+  # JOB 1: build — 코드 컴파일 (문법 검사 포함)
+  # ===============================================
+  build:
+    name: Build (Compile)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'        # 사용할 JDK 버전 (프로젝트에 맞게 조정)
+          distribution: 'temurin'   # Eclipse Temurin (가장 일반적인 무료 배포판)
+          cache: 'maven'            # Maven 의존성 캐시로 빌드 속도 향상
+
+      - name: Compile (syntax check)
+        # 컴파일 단계에서 자바 문법 오류가 자동으로 검출됨 (테스트는 제외)
+        run: mvn -B compile
+
+  # ===============================================
+  # JOB 2: test — 코드 테스트 (JUnit)
+  # ===============================================
+  test:
+    name: Test (JUnit)
+    needs: build              # build(컴파일) 성공해야 실행
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Run tests
+        # 테스트 실행 (src/test 의 JUnit 테스트)
+        run: mvn -B test
+
+  # ===============================================
+  # JOB 3: publish — Docker 이미지 빌드 & 업로드
+  # ===============================================
+  publish:
+    name: Build & Push Docker image
+    needs: test               # test(코드 테스트) 성공해야 실행
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      # 도커 빌드 전에 실행 가능한 .jar 파일을 먼저 생성
+      - name: Package (build jar)
+        run: mvn -B package -DskipTests   # 테스트는 JOB2에서 이미 했으므로 생략
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ secrets.DOCKER_HUB_USERNAME }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-,format=short
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
